@@ -1,9 +1,10 @@
-function x = subsref(br, s)
+function x = useHdf5SubsRef(br,s)
 % Subscripting.
 %   x = br(samples, channels). channels can be either channel indices or
-%   't' for the timestamps in milliseconds.
+%   't' for the timestamps in microseconds.
 %
 % AE 2011-04-11
+% MS 2015-04-10
 
 % make sure subscripting has the right form
 assert(numel(s) == 1 && strcmp(s.type, '()') && numel(s.subs) == 2, ...
@@ -13,28 +14,32 @@ assert(numel(s) == 1 && strcmp(s.type, '()') && numel(s.subs) == 2, ...
 samples = s(1).subs{1};
 channels = s(1).subs{2};
 
-% Neuralynx data are in blocks of 512 samples. So we first find
-% the block range in which the requested data resides
-rs = getRecordSize(br);
-
 % all samples requested?
 if iscolon(samples)
     nSamples = br.nbSamples;
-else
+elseif (ischar(channels) && strcmp(channels,'t')) || ~ischar(channels)
     % Check for valid range of samples
     assert(all(samples <= br.nbSamples & samples > 0), 'MATLAB:badsubscript', ...
         'Sample index out of range [1 %d]', br.nbSamples);
     nSamples = numel(samples);
+    
 end
 
-% time channel requested?
-if ischar(channels) && channels == 't'
+% time channel requested? Note: Neuralynx timestamps are in microseconds
+if ischar(channels) && strcmp(channels,'t')
     assert(br.t0 > 0, 't0 has not been updated in this file!')
     if iscolon(samples)
-        x = br.t0 + 1000 * (0:br.nbSamples-1)' / br.Fs;
+        x = br.t0 + 1e6 * (0:br.nbSamples-1)' / br.Fs;
     else
-        x = br.t0 + 1000 * (samples(:)-1)' / br.Fs;
+        x = br.t0 + 1e6 * (samples(:)-1)' / br.Fs;
     end
+elseif ischar(channels) && strcmp(channels,'t_range')
+    % Get data for requested time range [tStard tEnd]
+    % reading continuous block of samples
+    chIdx = 1;
+    index_range = getSampleIndex(br,samples);
+    x(:,1) = H5Tools.readDataset(br.fp, 'data', 'range', [chIdx, index_range(1)], [chIdx, index_range(end)]);
+    
 else
     
     % all channels requested?
@@ -55,29 +60,17 @@ else
     if iscolon(samples)
         % reading all samples
         for i = 1:nChannels
-            [vr,records] =  Nlx2MatCSC(fileName,[0 0 0 1 1],0,1,[]);
-            assert(all(vr==rs),'Some records are invalid')
-            x(:,i) = records(:);
+            x(:,i) = H5Tools.readDataset(br.fp, 'data', 'range', [channels(i), 1], [channels(i), br.nbSamples]);
         end
     elseif length(samples) > 2 && samples(end) - samples(1) == length(samples) - 1 && all(diff(samples) == 1)
         % reading continuous block of samples
-            block_range = [ceil(samples(1)/rs) ceil(samples(1)/rs)];
         for i = 1:nChannels
-            [vr,records] =  Nlx2MatCSC(fileName,[0 0 0 1 1],0,2,block_range);
-            assert(all(vr==rs),'Some records are invalid')
-            rr = records(:);
-            % Get starting and ending points within the blocks of samples
-            % retrieved
-            start = samples(1)- (block_range(1)-1)*rs;
-            stop = start + nSamples - 1;
-            x(:,i) = rr(start:stop);
+            x(:,i) = H5Tools.readDataset(br.fp, 'data', 'range', [channels(i), samples(1)], [channels(i), samples(end)]);
         end
-    else        
+    else
         % reading arbitrary set of samples
         for i = 1:nChannels
-            [vr,records] =  Nlx2MatCSC(fileName,[0 0 0 1 1],0,3,samples);
-            assert(all(vr==rs),'Some records are invalid')
-            x(:,i) = 
+            x(:,i) = H5Tools.readDataset(br.fp, 'data', 'index', [repmat(channels(i), nSamples, 1) , samples(:)]);
         end
     end
     
